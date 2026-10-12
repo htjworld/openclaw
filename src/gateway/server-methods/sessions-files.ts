@@ -16,7 +16,10 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { loadAgentIdentityFromWorkspaceAsync } from "../../agents/identity-file.js";
-import { resolveSandboxFsMount } from "../../agents/sandbox/fs-paths.js";
+import {
+  resolveSandboxFsMount,
+  resolveSandboxFsPathWithMounts,
+} from "../../agents/sandbox/fs-paths.js";
 import { resolveSandboxSessionWorkspace } from "../../agents/sandbox/session-workspace.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../../agents/workspace-bootstrap-policy.js";
@@ -27,6 +30,7 @@ import { captureSessionEntryMetadataRead } from "../../config/sessions/session-e
 import { captureIncognitoSessionBinding } from "../../config/sessions/session-incognito-binding.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isPathInside } from "../../infra/path-guards.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -109,27 +113,37 @@ function loadSessionFileRoot(loaded: ReturnType<typeof loadGatewaySessionEntryRe
 
 /**
  * Sandboxed agents name workspace files by container path, such as /workspace/report.md.
- * Map that path onto its host mount; the session boundary still decides access.
+ * Map a path outside the session root onto its host mount; the session boundary still decides access.
  */
 function resolveSandboxedSessionFilePath(
   source: ReturnType<typeof loadSessionFileRoot>,
   filePath: string,
 ): string {
-  if (!source.root || !source.agentId || !source.entry || !posix.isAbsolute(filePath)) {
+  if (
+    !source.root ||
+    !source.agentId ||
+    !source.entry ||
+    !posix.isAbsolute(filePath) ||
+    isPathInside(source.root, resolvePath(source.root, filePath))
+  ) {
     return filePath;
   }
-  const { workspaceMounts } = resolveSandboxSessionWorkspace({
+  const { sandboxWorkdir, workspaceLayout, workspaceMounts } = resolveSandboxSessionWorkspace({
     cfg: source.cfg,
     agentId: source.agentId,
     sessionKey: source.canonicalKey,
     sessionEntry: source.entry,
   });
-  const mount = resolveSandboxFsMount(workspaceMounts, filePath);
-  if (!mount) {
+  if (!sandboxWorkdir || !resolveSandboxFsMount(workspaceMounts, filePath)) {
     return filePath;
   }
-  const relative = posix.relative(mount.containerRoot, posix.normalize(filePath));
-  return resolvePath(mount.hostRoot, ...relative.split("/").filter(Boolean));
+  return resolveSandboxFsPathWithMounts({
+    filePath,
+    cwd: workspaceLayout.workspaceDir,
+    defaultWorkspaceRoot: workspaceLayout.workspaceDir,
+    defaultContainerRoot: sandboxWorkdir,
+    mounts: workspaceMounts,
+  }).hostPath;
 }
 
 /**
@@ -544,6 +558,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
             )
           : await setSessionWorkspaceFile({
               ...params,
+              path: resolveSandboxedSessionFilePath(loaded, params.path),
               root: loaded.root,
               fileRoot: loaded.fileRoot,
               assertCurrent: authorize,
