@@ -1,4 +1,4 @@
-import { resolve as resolvePath } from "node:path";
+import { posix, resolve as resolvePath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   ErrorCodes,
@@ -16,6 +16,8 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { loadAgentIdentityFromWorkspaceAsync } from "../../agents/identity-file.js";
+import { resolveSandboxFsMount } from "../../agents/sandbox/fs-paths.js";
+import { resolveSandboxSessionWorkspace } from "../../agents/sandbox/session-workspace.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../../agents/workspace-bootstrap-policy.js";
 import { getRuntimeConfig } from "../../config/io.js";
@@ -103,6 +105,31 @@ function loadSessionFileRoot(loaded: ReturnType<typeof loadGatewaySessionEntryRe
     fileRoot: resolveFileRoot({ root, spawnedCwd }),
     diffCwd,
   };
+}
+
+/**
+ * Sandboxed agents name workspace files by container path, such as /workspace/report.md.
+ * Map that path onto its host mount; the session boundary still decides access.
+ */
+function resolveSandboxedSessionFilePath(
+  source: ReturnType<typeof loadSessionFileRoot>,
+  filePath: string,
+): string {
+  if (!source.root || !source.agentId || !source.entry || !posix.isAbsolute(filePath)) {
+    return filePath;
+  }
+  const { workspaceMounts } = resolveSandboxSessionWorkspace({
+    cfg: source.cfg,
+    agentId: source.agentId,
+    sessionKey: source.canonicalKey,
+    sessionEntry: source.entry,
+  });
+  const mount = resolveSandboxFsMount(workspaceMounts, filePath);
+  if (!mount) {
+    return filePath;
+  }
+  const relative = posix.relative(mount.containerRoot, posix.normalize(filePath));
+  return resolvePath(mount.hostRoot, ...relative.split("/").filter(Boolean));
 }
 
 /**
@@ -402,6 +429,7 @@ async function handleSessionFilesRead(
                 : await getSessionWorkspaceFile({
                     ...loaded,
                     ...query,
+                    path: resolveSandboxedSessionFilePath(source, request.params.path),
                     assertCurrent,
                     authorizeHostRead: hostRead.authorizeHostRead,
                   });

@@ -385,6 +385,37 @@ describe("sessions.files RPC handlers", () => {
     });
   });
 
+  it.each([
+    { workspaceAccess: "rw", link: "/workspace/ui/vite.config.ts", opens: true },
+    { workspaceAccess: "ro", link: "/agent/ui/vite.config.ts", opens: true },
+    // The container workspace is a separate sandbox copy, outside the session workspace.
+    { workspaceAccess: "none", link: "/workspace/ui/vite.config.ts", opens: false },
+  ] as const)(
+    "resolves a sandboxed agent's $link link through its $workspaceAccess mount",
+    async ({ workspaceAccess, link, opens }) => {
+      const session = hoisted.loadSessionEntry() as Record<string, unknown>;
+      hoisted.loadSessionEntry.mockReturnValue({
+        ...session,
+        cfg: { agents: { defaults: { sandbox: { mode: "all", workspaceAccess } } } },
+      });
+
+      const result = await getFile(link);
+
+      if (opens) {
+        expect(expectOkPayload(result).file).toMatchObject({
+          content: "export default {};\n",
+          missing: false,
+          path: "ui/vite.config.ts",
+        });
+      } else {
+        expect(expectError(result).details).toMatchObject({
+          type: "session_file_not_found",
+          reason: "outside_session_boundary",
+        });
+      }
+    },
+  );
+
   it("truncates broad workspace searches by visited entries, not only by matches", async () => {
     for (let index = 0; index < 5_025; index += 1) {
       writeWorkspaceFile(workspaceRoot, `bulk-${String(index).padStart(4, "0")}.txt`, "");
