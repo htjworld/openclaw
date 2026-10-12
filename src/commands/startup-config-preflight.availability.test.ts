@@ -8,6 +8,7 @@ import {
   readStartupMigrationWarning,
   recordStartupMigrationWarnings,
 } from "../infra/state-migrations.messages.js";
+import * as pluginDoctorContracts from "../plugins/doctor-contract-registry.js";
 import {
   listActiveDegradedPlugins,
   setActiveDegradedPlugins,
@@ -68,6 +69,31 @@ it("admits an unavailable plugin while leaving legacy state for Doctor", async (
       expect(await fs.readFile(sourcePath, "utf8")).toBe(sourceBytes);
       expect(readConfigMachineState("voicewake.triggers")).toBeUndefined();
       expect(await fs.readdir(path.dirname(sourcePath))).toEqual(["voicewake.json"]);
+    });
+  });
+});
+
+it("does not rescan webhook listeners after startup recorded their completion", async () => {
+  await withDoctorConfigPreflightHome(async (home) => {
+    await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      const config = { gateway: { mode: "local" as const, auth: { mode: "none" as const } } };
+      const configBytes = `${JSON.stringify(config)}\n`;
+      await fs.writeFile(configPath, configBytes);
+      await seedInstalledPluginIndex({}, { config });
+      const migrate = vi.spyOn(pluginDoctorContracts, "applyPluginDoctorCompatibilityMigrations");
+      try {
+        await runStartupConfigPreflight({ gateway: true, observe: false });
+        expect(migrate).toHaveBeenCalledTimes(1);
+        expect(readConfigMachineState(`webhookListeners:${configPath}`)).toBe(true);
+
+        // Startup records completion in machine state, not in the config file.
+        await runStartupConfigPreflight({ gateway: true, observe: false });
+        expect(migrate).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+      }
+      expect(await fs.readFile(configPath, "utf8")).toBe(configBytes);
     });
   });
 });
