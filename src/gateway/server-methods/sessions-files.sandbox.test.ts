@@ -18,13 +18,19 @@ const hoisted = vi.hoisted(() => ({
   resolveAgentWorkspaceDir: vi.fn(),
   resolveDefaultAgentId: vi.fn(),
   readDelta: vi.fn(),
-  inspectSandboxImageVolumes: vi.fn(),
+  showsPlannedBind: vi.fn(),
 }));
 
-// Image inspection needs a container engine; each test states the image's declared volumes.
-vi.mock("../../agents/sandbox/docker.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../agents/sandbox/docker.js")>()),
-  inspectSandboxImageVolumes: hoisted.inspectSandboxImageVolumes,
+// The live-container check needs Docker; each test states what the container shows.
+vi.mock("../../agents/sandbox/mount-plan.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/sandbox/mount-plan.js")>()),
+  prepareSandboxMountPlan: async () => ({
+    binds: [],
+    skippedBinds: [],
+    readOnlyWorkspaceSkillMounts: [],
+    tmpfs: [],
+  }),
+  sandboxContainerShowsPlannedBind: hoisted.showsPlannedBind,
 }));
 
 vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
@@ -66,7 +72,7 @@ const mockVisibleMessages = createVisibleMessagesMock(hoisted.readDelta);
 let workspaceRoot: string;
 beforeEach(() => {
   workspaceRoot = prepareSessionFilesTest(hoisted, mockVisibleMessages);
-  hoisted.inspectSandboxImageVolumes.mockResolvedValue([]);
+  hoisted.showsPlannedBind.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -125,19 +131,19 @@ describe("sessions.files sandbox container paths", () => {
     });
   });
   it.each([
-    { name: "a configured tmpfs", tmpfs: ["/workspace/ui:rw"], imageVolumes: [] },
-    { name: "an image-declared volume", tmpfs: [], imageVolumes: ["/workspace/ui"] },
-    { name: "an image that cannot be inspected", tmpfs: [], imageVolumes: undefined },
-  ])("refuses links whose backing is $name", async ({ tmpfs, imageVolumes }) => {
-    hoisted.inspectSandboxImageVolumes.mockResolvedValue(imageVolumes);
+    { name: "hidden by container-only storage", shows: async () => false },
+    {
+      name: "unverifiable without a running container",
+      shows: async () => {
+        throw new Error("No such container");
+      },
+    },
+  ])("refuses links whose backing is $name", async ({ shows }) => {
+    hoisted.showsPlannedBind.mockImplementation(shows);
     const session = hoisted.loadSessionEntry() as Record<string, unknown>;
     hoisted.loadSessionEntry.mockReturnValue({
       ...session,
-      cfg: {
-        agents: {
-          defaults: { sandbox: { mode: "all", workspaceAccess: "rw", docker: { tmpfs } } },
-        },
-      },
+      cfg: { agents: { defaults: { sandbox: { mode: "all", workspaceAccess: "rw" } } } },
     });
     const hidden = path.join(workspaceRoot, "ui", "vite.config.ts");
     const original = fs.readFileSync(hidden, "utf8");
@@ -148,5 +154,8 @@ describe("sessions.files sandbox container paths", () => {
     });
     expectError(await saveFile({ path: link, content: "changed", expectedHash: "unused" }));
     expect(fs.readFileSync(hidden, "utf8")).toBe(original);
+    expect(hoisted.showsPlannedBind).toHaveBeenCalledWith(
+      expect.objectContaining({ target: link }),
+    );
   });
 });

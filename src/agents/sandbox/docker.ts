@@ -121,27 +121,6 @@ export function formatDockerDaemonUnavailableError(stderr: string): string {
     .join(" ");
 }
 
-/** Container paths an image's declared volumes hide; undefined when the image cannot be inspected. */
-export async function inspectSandboxImageVolumes(
-  engine: SandboxContainerEngine,
-  image: string,
-): Promise<string[] | undefined> {
-  const result = await execContainer(
-    engine,
-    ["image", "inspect", "--format", "{{json .Config.Volumes}}", image],
-    { allowFailure: true, signal: AbortSignal.timeout(5_000) },
-  ).catch(() => undefined);
-  if (result?.code !== 0) {
-    return undefined;
-  }
-  try {
-    const volumes: unknown = JSON.parse(result.stdout.trim());
-    return volumes && typeof volumes === "object" ? Object.keys(volumes) : [];
-  } catch {
-    return undefined;
-  }
-}
-
 export async function ensureContainerImage(engine: SandboxContainerEngine, image: string) {
   const result = await execContainer(engine, ["image", "inspect", image], {
     allowFailure: true,

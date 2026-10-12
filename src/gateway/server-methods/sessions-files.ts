@@ -21,7 +21,7 @@ import {
   resolveSandboxFsPathWithMounts,
 } from "../../agents/sandbox/fs-paths.js";
 import { resolveSandboxSessionWorkspace } from "../../agents/sandbox/session-workspace.js";
-import { resolveSandboxTmpfsMounts } from "../../agents/sandbox/workspace-mounts.js";
+import { buildSandboxContainerName, slugifySessionKey } from "../../agents/sandbox/shared.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../../agents/workspace-bootstrap-policy.js";
 import { getRuntimeConfig } from "../../config/io.js";
@@ -139,27 +139,38 @@ async function resolveSandboxedSessionFilePath(
   if (!sandboxWorkdir || !resolveSandboxFsMount(workspaceMounts, filePath)) {
     return filePath;
   }
-  // Configured tmpfs and image-declared volumes hide the host files below them, so those links
-  // name container content. Translate only when that backing is known; Podman can target a
-  // remote machine, so only Docker images are inspected here.
-  const { DOCKER_SANDBOX_ENGINE } = await import("../../agents/sandbox/container-engine.js");
-  const { inspectSandboxImageVolumes } = await import("../../agents/sandbox/docker.js");
-  const imageVolumes =
-    sandboxCfg.backend.toLowerCase() === "docker"
-      ? await inspectSandboxImageVolumes(DOCKER_SANDBOX_ENGINE, sandboxCfg.docker.image)
-      : undefined;
-  if (!imageVolumes) {
+  // Container-only storage hides the host files below it, so translate only when the live
+  // container shows this path through the bind the current plan maps it to. Podman can target
+  // a remote machine, so only Docker sandboxes are verified here.
+  if (sandboxCfg.backend.toLowerCase() !== "docker") {
     return filePath;
   }
-  const containerOnlyMounts = [
-    ...resolveSandboxTmpfsMounts(sandboxCfg.docker.tmpfs).map((mount) => mount.containerPath),
-    ...imageVolumes,
-  ];
-  if (
-    !resolveSandboxFsMount(workspaceMounts, filePath, containerOnlyMounts, {
-      containerOnlyAsUnmapped: true,
-    })
-  ) {
+  const { DOCKER_SANDBOX_ENGINE } = await import("../../agents/sandbox/container-engine.js");
+  const { prepareSandboxMountPlan, sandboxContainerShowsPlannedBind } =
+    await import("../../agents/sandbox/mount-plan.js");
+  const visible = await prepareSandboxMountPlan({
+    engine: DOCKER_SANDBOX_ENGINE,
+    workspaceDir: workspaceLayout.workspaceDir,
+    agentWorkspaceDir: workspaceLayout.agentWorkspaceDir,
+    skillsWorkspaceDir: workspaceLayout.skillsWorkspaceDir,
+    workdir: sandboxWorkdir,
+    workspaceAccess: sandboxCfg.workspaceAccess,
+    binds: sandboxCfg.docker.binds,
+    tmpfs: sandboxCfg.docker.tmpfs,
+  })
+    .then((plan) =>
+      sandboxContainerShowsPlannedBind({
+        engine: DOCKER_SANDBOX_ENGINE,
+        containerName: buildSandboxContainerName(
+          sandboxCfg.docker.containerPrefix,
+          sandboxCfg.scope === "shared" ? "shared" : slugifySessionKey(workspaceLayout.scopeKey),
+        ),
+        plan,
+        target: filePath,
+      }),
+    )
+    .catch(() => false);
+  if (!visible) {
     return filePath;
   }
   return resolveSandboxFsPathWithMounts({
@@ -168,7 +179,6 @@ async function resolveSandboxedSessionFilePath(
     defaultWorkspaceRoot: workspaceLayout.workspaceDir,
     defaultContainerRoot: sandboxWorkdir,
     mounts: workspaceMounts,
-    containerOnlyMounts,
   }).hostPath;
 }
 
