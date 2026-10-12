@@ -2,6 +2,7 @@ import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import {
   rootDir,
   runEmbeddedAgentMock,
@@ -104,6 +105,19 @@ describe("runReplyAgent direct replies and compaction notices", () => {
       expect(result).toMatchObject({ isError: true });
     },
   );
+
+  it("settles a plugin's silent claim of a required direct reply without the empty-reply failure", async () => {
+    const onAgentRunTerminalOutcome = vi.fn();
+    const result = await runEmptyDirectReply(
+      {
+        payloads: [{ text: SILENT_REPLY_TOKEN }],
+        meta: { agentMeta: {}, intentionalTerminalCompletion: "silent-claim" },
+      },
+      { onAgentRunTerminalOutcome },
+    );
+    expect(onAgentRunTerminalOutcome).toHaveBeenLastCalledWith("completed");
+    expect(result).toBeUndefined();
+  });
 
   it("threads the empty interactive direct fallback through normal final preparation", async () => {
     const result = await runEmptyDirectReply(
