@@ -21,6 +21,7 @@ import {
   resolveSandboxFsPathWithMounts,
 } from "../../agents/sandbox/fs-paths.js";
 import { resolveSandboxSessionWorkspace } from "../../agents/sandbox/session-workspace.js";
+import { resolveSandboxTmpfsMounts } from "../../agents/sandbox/workspace-mounts.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import { DEFAULT_IDENTITY_FILENAME } from "../../agents/workspace-bootstrap-policy.js";
 import { getRuntimeConfig } from "../../config/io.js";
@@ -128,13 +129,25 @@ function resolveSandboxedSessionFilePath(
   ) {
     return filePath;
   }
-  const { sandboxWorkdir, workspaceLayout, workspaceMounts } = resolveSandboxSessionWorkspace({
-    cfg: source.cfg,
-    agentId: source.agentId,
-    sessionKey: source.canonicalKey,
-    sessionEntry: source.entry,
-  });
-  if (!sandboxWorkdir || !resolveSandboxFsMount(workspaceMounts, filePath)) {
+  const { sandboxCfg, sandboxWorkdir, workspaceLayout, workspaceMounts } =
+    resolveSandboxSessionWorkspace({
+      cfg: source.cfg,
+      agentId: source.agentId,
+      sessionKey: source.canonicalKey,
+      sessionEntry: source.entry,
+    });
+  // Configured tmpfs hides the host files below it, so those links name container-only content.
+  // Image-declared volumes need a live container inspect; their host files stay inside the
+  // session root that the file browser already exposes.
+  const containerOnlyMounts = resolveSandboxTmpfsMounts(sandboxCfg.docker.tmpfs).map(
+    (mount) => mount.containerPath,
+  );
+  if (
+    !sandboxWorkdir ||
+    !resolveSandboxFsMount(workspaceMounts, filePath, containerOnlyMounts, {
+      containerOnlyAsUnmapped: true,
+    })
+  ) {
     return filePath;
   }
   return resolveSandboxFsPathWithMounts({
@@ -143,6 +156,7 @@ function resolveSandboxedSessionFilePath(
     defaultWorkspaceRoot: workspaceLayout.workspaceDir,
     defaultContainerRoot: sandboxWorkdir,
     mounts: workspaceMounts,
+    containerOnlyMounts,
   }).hostPath;
 }
 

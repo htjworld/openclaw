@@ -116,4 +116,30 @@ describe("sessions.files sandbox container paths", () => {
       path: "ui/vite.config.ts",
     });
   });
+  it("refuses links into a configured tmpfs instead of the host file it hides", async () => {
+    const session = hoisted.loadSessionEntry() as Record<string, unknown>;
+    hoisted.loadSessionEntry.mockReturnValue({
+      ...session,
+      cfg: {
+        agents: {
+          defaults: {
+            sandbox: {
+              mode: "all",
+              workspaceAccess: "rw",
+              docker: { tmpfs: ["/workspace/ui:rw"] },
+            },
+          },
+        },
+      },
+    });
+    const hidden = path.join(workspaceRoot, "ui", "vite.config.ts");
+    const original = fs.readFileSync(hidden, "utf8");
+    const link = "/workspace/ui/vite.config.ts";
+
+    expect(expectError(await getFile(link)).details).toMatchObject({
+      reason: "outside_session_boundary",
+    });
+    expectError(await saveFile({ path: link, content: "changed", expectedHash: "unused" }));
+    expect(fs.readFileSync(hidden, "utf8")).toBe(original);
+  });
 });
