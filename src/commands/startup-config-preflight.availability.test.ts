@@ -19,6 +19,7 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { withEnvAsync } from "../test-utils/env.js";
 import { readConfigPreflightSnapshot } from "./config-preflight-snapshot.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
+import { recordUnwrittenWebhookCompletion } from "./doctor/shared/legacy-webhook-pins.js";
 import { runStartupConfigPreflight } from "./startup-config-preflight.js";
 
 afterEach(() => {
@@ -90,6 +91,41 @@ it("does not rescan webhook listeners after startup recorded their completion", 
         // Startup records completion in machine state, not in the config file.
         await runStartupConfigPreflight({ gateway: true, observe: false });
         expect(migrate).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+      }
+      expect(await fs.readFile(configPath, "utf8")).toBe(configBytes);
+    });
+  });
+});
+
+it("does not rescan webhook listeners after startup completed a channel Doctor left pending", async () => {
+  await withDoctorConfigPreflightHome(async (home) => {
+    await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, async () => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      const doctorRecord = { telegram: [], feishu: [], "nextcloud-talk": [] };
+      const config = {
+        gateway: { mode: "local" as const, auth: { mode: "none" as const } },
+        meta: { migrations: { webhookListeners: doctorRecord } },
+      };
+      const configBytes = `${JSON.stringify(config)}\n`;
+      await fs.writeFile(configPath, configBytes);
+      await seedInstalledPluginIndex({}, { config });
+      recordUnwrittenWebhookCompletion(
+        { sourceConfig: config },
+        {
+          config: {
+            ...config,
+            meta: { migrations: { webhookListeners: { ...doctorRecord, msteams: [] } } },
+          },
+          changes: ["Recorded webhook listener decisions."],
+        },
+        process.env,
+      );
+      const migrate = vi.spyOn(pluginDoctorContracts, "applyPluginDoctorCompatibilityMigrations");
+      try {
+        await runStartupConfigPreflight({ gateway: true, observe: false });
+        expect(migrate).not.toHaveBeenCalled();
       } finally {
         vi.restoreAllMocks();
       }
