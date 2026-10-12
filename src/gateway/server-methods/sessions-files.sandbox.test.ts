@@ -18,6 +18,13 @@ const hoisted = vi.hoisted(() => ({
   resolveAgentWorkspaceDir: vi.fn(),
   resolveDefaultAgentId: vi.fn(),
   readDelta: vi.fn(),
+  inspectSandboxImageVolumes: vi.fn(),
+}));
+
+// Image inspection needs a container engine; each test states the image's declared volumes.
+vi.mock("../../agents/sandbox/docker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/sandbox/docker.js")>()),
+  inspectSandboxImageVolumes: hoisted.inspectSandboxImageVolumes,
 }));
 
 vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
@@ -59,6 +66,7 @@ const mockVisibleMessages = createVisibleMessagesMock(hoisted.readDelta);
 let workspaceRoot: string;
 beforeEach(() => {
   workspaceRoot = prepareSessionFilesTest(hoisted, mockVisibleMessages);
+  hoisted.inspectSandboxImageVolumes.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -116,19 +124,18 @@ describe("sessions.files sandbox container paths", () => {
       path: "ui/vite.config.ts",
     });
   });
-  it("refuses links into a configured tmpfs instead of the host file it hides", async () => {
+  it.each([
+    { name: "a configured tmpfs", tmpfs: ["/workspace/ui:rw"], imageVolumes: [] },
+    { name: "an image-declared volume", tmpfs: [], imageVolumes: ["/workspace/ui"] },
+    { name: "an image that cannot be inspected", tmpfs: [], imageVolumes: undefined },
+  ])("refuses links whose backing is $name", async ({ tmpfs, imageVolumes }) => {
+    hoisted.inspectSandboxImageVolumes.mockResolvedValue(imageVolumes);
     const session = hoisted.loadSessionEntry() as Record<string, unknown>;
     hoisted.loadSessionEntry.mockReturnValue({
       ...session,
       cfg: {
         agents: {
-          defaults: {
-            sandbox: {
-              mode: "all",
-              workspaceAccess: "rw",
-              docker: { tmpfs: ["/workspace/ui:rw"] },
-            },
-          },
+          defaults: { sandbox: { mode: "all", workspaceAccess: "rw", docker: { tmpfs } } },
         },
       },
     });

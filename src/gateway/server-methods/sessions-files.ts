@@ -116,10 +116,10 @@ function loadSessionFileRoot(loaded: ReturnType<typeof loadGatewaySessionEntryRe
  * Sandboxed agents name workspace files by container path, such as /workspace/report.md.
  * Map a path outside the session root onto its host mount; the session boundary still decides access.
  */
-function resolveSandboxedSessionFilePath(
+async function resolveSandboxedSessionFilePath(
   source: ReturnType<typeof loadSessionFileRoot>,
   filePath: string,
-): string {
+): Promise<string> {
   if (
     !source.root ||
     !source.agentId ||
@@ -136,14 +136,26 @@ function resolveSandboxedSessionFilePath(
       sessionKey: source.canonicalKey,
       sessionEntry: source.entry,
     });
-  // Configured tmpfs hides the host files below it, so those links name container-only content.
-  // Image-declared volumes need a live container inspect; their host files stay inside the
-  // session root that the file browser already exposes.
-  const containerOnlyMounts = resolveSandboxTmpfsMounts(sandboxCfg.docker.tmpfs).map(
-    (mount) => mount.containerPath,
-  );
+  if (!sandboxWorkdir || !resolveSandboxFsMount(workspaceMounts, filePath)) {
+    return filePath;
+  }
+  // Configured tmpfs and image-declared volumes hide the host files below them, so those links
+  // name container content. Translate only when that backing is known; Podman can target a
+  // remote machine, so only Docker images are inspected here.
+  const { DOCKER_SANDBOX_ENGINE } = await import("../../agents/sandbox/container-engine.js");
+  const { inspectSandboxImageVolumes } = await import("../../agents/sandbox/docker.js");
+  const imageVolumes =
+    sandboxCfg.backend.toLowerCase() === "docker"
+      ? await inspectSandboxImageVolumes(DOCKER_SANDBOX_ENGINE, sandboxCfg.docker.image)
+      : undefined;
+  if (!imageVolumes) {
+    return filePath;
+  }
+  const containerOnlyMounts = [
+    ...resolveSandboxTmpfsMounts(sandboxCfg.docker.tmpfs).map((mount) => mount.containerPath),
+    ...imageVolumes,
+  ];
   if (
-    !sandboxWorkdir ||
     !resolveSandboxFsMount(workspaceMounts, filePath, containerOnlyMounts, {
       containerOnlyAsUnmapped: true,
     })
@@ -457,7 +469,7 @@ async function handleSessionFilesRead(
                 : await getSessionWorkspaceFile({
                     ...loaded,
                     ...query,
-                    path: resolveSandboxedSessionFilePath(source, request.params.path),
+                    path: await resolveSandboxedSessionFilePath(source, request.params.path),
                     assertCurrent,
                     authorizeHostRead: hostRead.authorizeHostRead,
                   });
@@ -572,7 +584,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
             )
           : await setSessionWorkspaceFile({
               ...params,
-              path: resolveSandboxedSessionFilePath(loaded, params.path),
+              path: await resolveSandboxedSessionFilePath(loaded, params.path),
               root: loaded.root,
               fileRoot: loaded.fileRoot,
               assertCurrent: authorize,
